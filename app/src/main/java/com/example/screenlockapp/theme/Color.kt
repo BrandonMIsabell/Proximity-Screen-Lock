@@ -1,4 +1,4 @@
-package com.example.watertracker.ui.theme
+package com.example.screenlockapp.theme
 
 import androidx.compose.ui.graphics.Color
 
