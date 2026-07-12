@@ -56,4 +56,13 @@ dependencies {
     implementation("androidx.compose.runtime:runtime-livedata")
     implementation("androidx.compose.runtime:runtime-rxjava2")
     implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.navigation:navigation-compose:2.7.7")
+    // For pre-styled UI components (Buttons, Text, Cards)
+    implementation("androidx.compose.material3:material3")
+
+// For your App Selection screen (loading app icons later)
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
+// For cleanly separating your Bluetooth logic from your UI later
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
 }
