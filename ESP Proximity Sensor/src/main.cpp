@@ -6,48 +6,111 @@
 #include <freertos/queue.h>
 
 // --- FREERTOS TASK HANDLES ---
-TaskHandle_t TaskBLEScanHandle = NULL;
-TaskHandle_t TaskProximityHandle = NULL;
+TaskHandle_t TaskBLEServerHandle = NULL;
 TaskHandle_t TaskButtonHandle = NULL;
 TaskHandle_t TaskRGBEngineHandle = NULL;
 
 // --- INTER-TASK COMMUNICATION ---
-// Define a Queue Handle here to safely send RSSI values from Core 0 to Core 1!
-// QueueHandle_t rssiQueue;
+volatile bool deviceConnected = false;
+volatile bool proximityLockingActive = false;
+volatile bool isLocked = true;
+volatile int statusDisplayTimer = 0;
 
 // --- HARDWARE CONFIGURATION ---
-const int BUTTON_1_PIN = 4; 
-const int BUTTON_2_PIN = 5;
-const int RGB_RED_PIN  = 12;
-const int RGB_GRN_PIN  = 13;
-const int RGB_BLU_PIN  = 14;
+#define BUTTON_1_PIN  4 // Bluetooth connection search (reset)
+#define BUTTON_2_PIN  5 // System status indicator with LED
+#define RGB_RED_PIN   12
+#define RGB_GRN_PIN   13
+#define RGB_BLU_PIN   14
+
+// --- BLUETOOTH CONECTIONS ---
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+
+class MyServerCallbacks: public BLEServerCallbacks {
+        void onConnect(BLEServer* pServer) {
+          deviceConnected = true;
+          Serial.println("Phone Connected!");
+        };
+    
+        void onDisconnect(BLEServer* pServer) {
+          deviceConnected = false;
+          Serial.println("Phone Disconnected. Searching again...");
+          // Restart advertising so the phone can reconnect later
+          BLEDevice::startAdvertising(); 
+        }
+    };
+
+class MyCharacteristicCallbacks: public BLECharacteristicCallbacks{
+    void onWrite(BLECharacteristic *pCharacteristic){
+        std::string rxValue = pCharacteristic-> getValue();
+        if (rxValue.length() > 0) {
+            int receivedCommand = rxValue[0];
+            
+            if (receivedCommand == 0) {
+                isLocked = true; 
+                Serial.println("Command Received: LOCK");
+            } else if (receivedCommand == 1) {
+                isLocked = false; 
+                Serial.println("Command Received: UNLOCK");
+            } else if (receivedCommand == 2) {
+                proximityLockingActive = !proximityLockingActive; 
+        
+                if (proximityLockingActive) {
+                    Serial.println("System ARMED: Proximity Locking Active");
+                } else {
+                    Serial.println("System DISARMED: Manual Mode Only");
+                }
+            }
+        }
+    }
+};
 
 // ==========================================
 //               CORE 0 TASKS
 // ==========================================
 
 // Task 1: BLE Mesh Scanning
-void TaskBLEScan(void *pvParameters) {
-    // Write your BLE setup logic here (Runs once upon task initialization)
+void TaskBLEServer(void *pvParameters) {
+    Serial.println("Starting BLE Server...");
+
+    // Name of ESP32 (This is what the phone will see)
+    BLEDevice::init("Proximity_ESP32"); 
+
+    // Creates the BLE Server
+    BLEServer *pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
+
+    // Create the BLE Service
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+
+    // Create a BLE Characteristic (Used to send/receive data)
+    BLECharacteristic *pCharacteristic = pService->createCharacteristic(
+                                         CHARACTERISTIC_UUID,
+                                         BLECharacteristic::PROPERTY_READ |
+                                         BLECharacteristic::PROPERTY_WRITE
+                                       );
+
+    pCharacteristic->setValue("ESP32 is ready!");
+    pCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
+
+    // Start the service
+    pService->start();
+
+    // Start broadcasting (advertising) so the phone can find it
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06);  
+    pAdvertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
+  
+    Serial.println("ESP32 is now broadcasting! Waiting for a phone to connect...");
     
     for (;;) {
-        // 1. Scan for nearby BLE devices
-        // 2. Filter advertising packets for your specific app identifier
-        // 3. Extract the raw RSSI (signal strength)
-        
+        // The BLE connection runs in the background        
         vTaskDelay(pdMS_TO_TICKS(100)); // Yield to prevent watchdog starvation
-    }
-}
-
-// Task 2: RSSI Proximity Calculus
-void TaskProximity(void *pvParameters) {
-    for (;;) {
-        // 1. Collect raw RSSI values over a short window
-        // 2. Run a digital filter (like a moving average) to smooth out signal spikes
-        // 3. Determine if the device crossed the lock or unlock threshold
-        // 4. Send the result to Core 1's RGB Engine via a queue or global state
-        
-        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
@@ -56,29 +119,63 @@ void TaskProximity(void *pvParameters) {
 //               CORE 1 TASKS
 // ==========================================
 
-// Task 3: Button Debouncing & Software ISR Handling
+// Task 2: Button Debouncing & Software ISR Handling
 void TaskButton(void *pvParameters) {
     // Initialize your GPIO input pins here
-    
+    pinMode(BUTTON_1_PIN, INPUT_PULLUP);
+    pinMode(BUTTON_2_PIN, INPUT_PULLUP);
     for (;;) {
-        // 1. Monitor state changes on your Momentary Tactile Buttons
-        // 2. Perform software debouncing (ensure press is stable for ~50ms)
-        // 3. Trigger state transitions (e.g., manual pairing mode, tracking override)
+        // 1. Monitor state changes on  Momentary Tactile Buttons
+        if(digitalRead(BUTTON_1_PIN) == LOW){ // Reset or start bluetooth connection search
+            deviceConnected = false;
+            Serial.println("Restarting Connection Search");
+            BLEDevice::startAdvertising(); 
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        if(digitalRead(BUTTON_2_PIN) == LOW){ // Display System state with LED (Make TaskButton higher priority once device is connected)
+            statusDisplayTimer = 2000;
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
         
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
-// Task 4: RGB State Engine
+// Task 3: RGB State Engine
 void TaskRGBEngine(void *pvParameters) {
     // Initialize your PWM channels / GPIO output pins here for the Common Cathode LED
-    
+    pinMode(RGB_RED_PIN, OUTPUT);
+    pinMode(RGB_GRN_PIN, OUTPUT);
+    pinMode(RGB_BLU_PIN, OUTPUT);
+
+    digitalWrite(RGB_RED_PIN, LOW);
+    digitalWrite(RGB_GRN_PIN, LOW);
+    digitalWrite(RGB_BLU_PIN, LOW);
     for (;;) {
-        // 1. Check current connection or proximity state
-        // 2. Drive PWM signals to blend colors (Red = Locked, Cyan/Green = Unlocked, Blue = Pairing)
-        // 3. Handle smooth blinking or breathing visual effects
+        digitalWrite(RGB_RED_PIN, LOW);
+        digitalWrite(RGB_GRN_PIN, LOW);
+        digitalWrite(RGB_BLU_PIN, LOW);
+        if(!deviceConnected){
+            if ((millis() / 500) % 2 == 0) {
+                digitalWrite(RGB_BLU_PIN, HIGH);
+            }
+    
+        }
+        else if (statusDisplayTimer > 0){
+            if(isLocked){
+                digitalWrite(RGB_RED_PIN, HIGH);
+            }
+            else if(!isLocked && !proximityLockingActive){
+                digitalWrite(RGB_BLU_PIN, HIGH);
+                digitalWrite(RGB_RED_PIN, HIGH);
+            }
+            else if (proximityLockingActive){
+                digitalWrite(RGB_GRN_PIN, HIGH);
+            }
+            statusDisplayTimer -= 33;
+        }
         
-        vTaskDelay(pdMS_TO_TICKS(33)); // ~$30\text{Hz}$ refresh rate for smooth animations
+        vTaskDelay(pdMS_TO_TICKS(33)); 
     }
 }
 
@@ -89,30 +186,20 @@ void TaskRGBEngine(void *pvParameters) {
 void setup() {
     Serial.begin(115200);
 
-    // Initialize your Inter-Task Communication queues here
+    // Initialize Future Inter-Task Communication queues here
     // rssiQueue = xQueueCreate(10, sizeof(int));
 
-    // CREATE CORE 0 TASKS (The Protocol Core)
+    // CREATE CORE 0 TASK (The Protocol Core)
     xTaskCreatePinnedToCore(
-        TaskBLEScan,          // Function name
-        "BLE_Scan",           // Text name for debugging
-        4096,                 // Stack size in words (BLE requires a larger stack)
-        NULL,                 // Parameter to pass
-        2,                    // Priority
-        &TaskBLEScanHandle,   // Task handle
-        0                     // Pinned to Core 0
+        TaskBLEServer,          // Function name
+        "BLE_Server",           // Text name for debugging
+        4096,                   // Stack size in words (BLE requires a larger stack)
+        NULL,                   // Parameter to pass
+        2,                      // Priority
+        &TaskBLEServerHandle,   // Task handle
+        0                       // Pinned to Core 0
     );
-
-    xTaskCreatePinnedToCore(
-        TaskProximity,
-        "Proximity_Calc",
-        2048,
-        NULL,
-        1,
-        &TaskProximityHandle,
-        0                     // Pinned to Core 0
-    );
-
+    
     // CREATE CORE 1 TASKS (The Application Core)
     xTaskCreatePinnedToCore(
         TaskButton,
@@ -136,7 +223,5 @@ void setup() {
 }
 
 void loop() {
-    // Leave this empty! In a FreeRTOS architecture, execution happens entirely inside your tasks.
-    // Putting code here wastes Core 1 processing cycles on an implicitly lower priority setup loop.
     vTaskDelete(NULL); 
 }
