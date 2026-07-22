@@ -16,12 +16,15 @@ volatile bool proximityLockingActive = false;
 volatile bool isLocked = true;
 volatile int statusDisplayTimer = 0;
 
+BLEServer* pGlobalServer = NULL;
+
 // --- HARDWARE CONFIGURATION ---
-#define BUTTON_1_PIN  4 // Bluetooth connection search (reset)
-#define BUTTON_2_PIN  5 // System status indicator with LED
-#define RGB_RED_PIN   12
-#define RGB_GRN_PIN   13
-#define RGB_BLU_PIN   14
+#define BUTTON_1_PIN  32 // Bluetooth connection search (reset)
+#define BUTTON_2_PIN  33 // System status indicator with LED
+#define RGB_RED_PIN   14
+#define RGB_GRN_PIN   26
+#define RGB_BLU_PIN   27
+
 
 // --- BLUETOOTH CONECTIONS ---
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
@@ -79,11 +82,11 @@ void TaskBLEServer(void *pvParameters) {
     BLEDevice::init("Proximity_ESP32"); 
 
     // Creates the BLE Server
-    BLEServer *pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new MyServerCallbacks());
+   pGlobalServer = BLEDevice::createServer();
+    pGlobalServer->setCallbacks(new MyServerCallbacks());
 
     // Create the BLE Service
-    BLEService *pService = pServer->createService(SERVICE_UUID);
+    BLEService *pService = pGlobalServer->createService(SERVICE_UUID);
 
     // Create a BLE Characteristic (Used to send/receive data)
     BLECharacteristic *pCharacteristic = pService->createCharacteristic(
@@ -127,9 +130,14 @@ void TaskButton(void *pvParameters) {
     for (;;) {
         // 1. Monitor state changes on  Momentary Tactile Buttons
         if(digitalRead(BUTTON_1_PIN) == LOW){ // Reset or start bluetooth connection search
-            deviceConnected = false;
-            Serial.println("Restarting Connection Search");
-            BLEDevice::startAdvertising(); 
+           if(!deviceConnected){
+                Serial.println("Restarting Connection Search");
+                BLEDevice::startAdvertising();
+            }
+            else{
+                Serial.println("Force Phone Disconnect");
+                pGlobalServer->disconnect(pGlobalServer->getConnId());
+            }
             vTaskDelay(pdMS_TO_TICKS(500));
         }
         if(digitalRead(BUTTON_2_PIN) == LOW){ // Display System state with LED (Make TaskButton higher priority once device is connected)
